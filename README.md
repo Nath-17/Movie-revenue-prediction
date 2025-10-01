@@ -1,3 +1,10 @@
 # ML_Challenge
 
-hello Nathan 
+Task to do: 
+
+- Build environment
+- Model simple de base
+- analyse de données exploratoire
+- model tests
+- fetaure engineering
+- modeles tests
