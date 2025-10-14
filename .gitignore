@@ -1,1 +1,3 @@
 /data
+*.txt
+/catboost_info
