@@ -1,0 +1,6 @@
+/data
+*.txt
+/catboost_info
+
+.env
+/wandb
