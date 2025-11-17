@@ -1,12 +1,13 @@
+from sklearn.base import clone as sklearn_clone
 import pandas as pd
 import numpy as np
 from xgboost import XGBRegressor
 from catboost import CatBoostRegressor, Pool
-from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.model_selection import cross_val_score, KFold
-from sklearn.metrics import make_scorer, mean_squared_error
+from sklearn.model_selection import KFold
+from sklearn.metrics import mean_squared_error
+from sklearn.ensemble import RandomForestRegressor
 
-CHOOSEN_MODEL = "catboost"  # "catboost", "xgboost", "histgradientboosting"
+CHOOSEN_MODEL = "catboost"  # "catboost", "xgboost", "randomforest"
 ALL_MODELS = True
 
 # ----------------------------------------------------------------
@@ -377,29 +378,6 @@ def preprocess_data(X_train, X_test, y_train):
     return X_train_final, X_test_final, y_train_log
 
 
-def remove_outliers(X_train, y_train):
-    X_train = X_train.copy()
-    y_train = y_train.copy()
-
-    print("Before removing outliers:", X_train.shape)
-    # remove index 735
-    X_train = X_train.drop(index=735)
-    y_train = y_train.drop(index=735)
-
-    mask = (X_train["budget"] > 120000) | (X_train["budget"] <= 0) & (
-        X_train["popularity_score"] < 45
-    ) & (X_train["length"] > 45)
-
-    mask2 = (X_train["popularity_score"] < 45) & (X_train["length"] > 45)
-
-    X_train = X_train.loc[mask2]
-    y_train = y_train.loc[X_train.index]
-
-    print("After removing outliers:", X_train.shape)
-
-    return X_train, y_train
-
-
 # ----------------------------------------------------------------
 # TRAINING MODELS
 # ----------------------------------------------------------------
@@ -411,13 +389,14 @@ def train_model(X_train, y_train, model_name="catboost"):
     if model_name == "catboost":
         train_pool = Pool(X_train, y_train)
         model = CatBoostRegressor(
-            iterations=900,
+            # iterations=600,
             learning_rate=0.05,
             depth=6,
             loss_function="RMSE",
-            l2_leaf_reg=4,
-            random_seed=2,
+            l2_leaf_reg=8,
+            random_seed=42,
             verbose=100,
+            early_stopping_rounds=50,
         )
         model.fit(train_pool)
 
@@ -437,14 +416,12 @@ def train_model(X_train, y_train, model_name="catboost"):
         )
         model.fit(X_train, y_train)
 
-    elif model_name == "histgradientboosting":
-        model = HistGradientBoostingRegressor(
-            max_depth=4, learning_rate=0.075, max_iter=200, random_state=42
-        )
+    elif model_name == "randomforest":
+        model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
         model.fit(X_train, y_train)
     else:
         raise ValueError(
-            "Unsupported model_name. Choose 'catboost', 'xgboost', or 'histgradientboosting'"
+            "Unsupported model_name. Choose 'catboost', 'xgboost', or 'randomforest'"
         )
 
     return model
@@ -469,11 +446,72 @@ def save_submission(y_pred, filename="test.txt"):
 # ----------------------------------------------------------------
 
 
-def evaluate_model(X, y, model, name):
-    scorer = make_scorer(mean_squared_error, greater_is_better=False)
+def compare_models(X, y):
+    y = y.values.ravel()
+    models = {
+        "CatBoost": CatBoostRegressor(
+            learning_rate=0.05,
+            depth=6,
+            loss_function="RMSE",
+            l2_leaf_reg=8,
+            random_seed=2,
+            verbose=0,
+            early_stopping_rounds=50,
+        ),
+        "XGBoost": XGBRegressor(
+            n_estimators=3000,
+            learning_rate=0.05,
+            max_depth=6,
+            subsample=0.9,
+            colsample_bytree=0.9,
+            reg_lambda=1.0,
+            min_child_weight=1.0,
+            objective="reg:squarederror",
+            tree_method="hist",
+            random_state=2,
+            n_jobs=-1,
+            early_stopping_rounds=50,
+        ),
+        "RandomForest": RandomForestRegressor(
+            n_estimators=100, random_state=2, n_jobs=-1
+        ),
+    }
+
     cv = KFold(n_splits=5, shuffle=True, random_state=42)
-    scores = -cross_val_score(model, X, y, scoring=scorer, cv=cv)
-    print(f"{name} RMSE mean: {np.sqrt(scores.mean()):.4f}")
+    for name, model_template in models.items():
+        fold_scores = []
+
+        for fold, (train_idx, val_idx) in enumerate(cv.split(X, y), 1):
+
+            model = sklearn_clone(model_template)
+
+            # 2. Créer les jeux de train/validation pour CE fold
+            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+
+            if name == "CatBoost":
+                model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=0)
+
+            elif name == "XGBoost":
+                model.fit(
+                    X_train,
+                    y_train,
+                    eval_set=[(X_val, y_val)],
+                    verbose=0,
+                )
+
+            elif name == "RandomForest":
+                model.fit(X_train, y_train)
+
+            y_pred = model.predict(X_val)
+            y_pred = y_pred.clip(0, None)
+
+            score = mean_squared_error(y_val, y_pred)
+            fold_scores.append(score)
+
+        mean_score = np.mean(fold_scores)
+
+        print(f"{name} MSLE mean: {mean_score} over 5 folds")
 
 
 # ----------------------------------------------------------------
@@ -490,7 +528,7 @@ if __name__ == "__main__":
         X_train, X_test, y_train
     )
     if ALL_MODELS:
-        for model_name in ["catboost", "xgboost", "histgradientboosting"]:
+        for model_name in ["catboost", "xgboost", "randomforest"]:
             print(f"Training and evaluating model: {model_name}")
             model = train_model(X_train_processed, y_train_log, model_name=model_name)
             y_pred = model.predict(X_test_processed)
@@ -511,5 +549,5 @@ if __name__ == "__main__":
         save_submission(y_pred, filename=f"{CHOOSEN_MODEL}.txt")
 
     # Evaluate models
-    # print("Evaluating models with 5-Fold Cross-Validation:")
-    # evaluate_model(X_train_processed, y_train_log, model, CHOOSEN_MODEL)
+    print("Evaluating models with 5-Fold Cross-Validation:")
+    compare_models(X_train_processed, y_train_log)
