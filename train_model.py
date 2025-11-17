@@ -4,21 +4,16 @@ from xgboost import XGBRegressor
 from catboost import CatBoostRegressor, Pool
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.model_selection import cross_val_score, KFold
-from sklearn.metrics import make_scorer, mean_squared_log_error
+from sklearn.metrics import make_scorer, mean_squared_error
 
 CHOOSEN_MODEL = "catboost"  # "catboost", "xgboost", "histgradientboosting"
+ALL_MODELS = True
+
 # ----------------------------------------------------------------
 # Preprocessing functions
 # ----------------------------------------------------------------
 
 # Preprocessing functions
-
-
-# Clip popularity scores at 20
-def clip_popularity(X):
-    X = X.copy()
-    X["popularity_score"] = X["popularity_score"].clip(upper=20)
-    return X
 
 
 # Create a binary indicator for zero budget (nan values)
@@ -70,7 +65,83 @@ def US_to_binary(X):
     0 = movie is from another country
     """
     X = X.copy()
-    X["country"] = (X["country"] == "US").astype(int)
+    X["country_US"] = (X["country"] == "US").astype(int)
+    return X
+
+
+def count_countries(X):
+    """create a column 'country_count' that counts the number of countries listed
+    in the 'country' column.
+    """
+    X = X.copy()
+    X["country_count"] = (
+        X["country"]
+        .fillna("")
+        .apply(lambda val: len(str(val).split(",")) if str(val).strip() != "" else 0)
+    )
+    return X
+
+
+def get_main_countries(X, top_n=7):
+    """
+    Renvoie les top N pays principaux les plus fréquents.
+    Le pays principal est le premier dans la chaîne 'country' avant la virgule.
+    """
+    # Extraire pays principal
+    country_main = (
+        X["country"]
+        .apply(lambda x: x.split(",")[0] if isinstance(x, str) else "Unknown")
+        .astype(str)
+        .str.strip()
+    )
+    top_countries = country_main.value_counts().nlargest(top_n).index.tolist()
+
+    return top_countries
+
+
+def add_country_dummies(X, top_countries):
+    """
+    Crée des dummies pour les pays principaux présents dans top_countries.
+    Les pays non présents sont regroupés en 'Other'.
+    """
+    X = X.copy()
+    X["country_main"] = (
+        X["country"]
+        .apply(lambda x: x.split(",")[0] if isinstance(x, str) else "Unknown")
+        .astype(str)
+        .str.strip()
+    )
+
+    # mettre les autres pays à 'Other'
+    X["country_main"] = X["country_main"].apply(
+        lambda c: c if c in top_countries else "Other"
+    )
+    dummies = pd.get_dummies(X["country_main"], prefix="country", dtype=int)
+    X = pd.concat([X, dummies], axis=1)
+
+    return X, list(dummies.columns)
+
+
+def add_top_company_features(X, top_revenue_companies):
+    """
+    Ajoute deux colonnes :
+    - 'num_top_companies' : nombre de studios du film présents dans la liste top_revenue_companies
+    - 'is_top_company' : 1 si au moins un studio du film est dans la liste, sinon 0
+    """
+    X = X.copy()
+
+    def count_star_companies(company_str):
+        if not isinstance(company_str, str) or company_str.strip() == "":
+            return 0
+        companies = [c.strip() for c in company_str.split(",")]
+        return sum(c in top_revenue_companies for c in companies)
+
+    # Nombre de studios prestigieux dans chaque film
+    X["num_top_companies"] = X["company"].fillna("").apply(count_star_companies)
+
+    # Variable binaire si au moins un studio prestigieux
+    X["is_top_company"] = (X["num_top_companies"] > 0).astype(int)
+
     return X
 
 
@@ -110,18 +181,42 @@ def encode_genres(X, selected_genres):
     return X
 
 
-def add_language_count(X):
+def add_star_actor_features(X, star_actors):
     """
-    create a column 'language_count' that counts the number of languages listed
-    in the 'language' column.
+    Ajoute deux colonnes :
+    - 'num_stars' : nombre d'acteurs prestigieux présents dans le casting du film
+    - 'has_stars' : 1 si au moins un acteur prestigieux est présent
     """
     X = X.copy()
 
-    X["language_count"] = (
-        X["language"]
-        .fillna("")
-        .apply(lambda val: len(str(val).split(",")) if str(val).strip() != "" else 0)
+    def count_stars(actor_str):
+        if not isinstance(actor_str, str) or actor_str.strip() == "":
+            return 0
+        actors = [a.strip() for a in actor_str.split(",")]
+        return sum(a in star_actors for a in actors)
+
+    # Nombre d'acteurs prestigieux par film
+    X["num_stars"] = X["cast"].fillna("").apply(count_stars)
+
+    # Présence ou non d'au moins un acteur prestigieux
+    X["has_stars"] = (X["num_stars"] > 0).astype(int)
+
+    return X
+
+
+def extract_release_year(X, date_column="date"):
+    """
+    Extract release year from date column and correct future years
+    """
+    X = X.copy()
+    X["date_format"] = pd.to_datetime(
+        X[date_column], format="%m/%d/%y", errors="coerce"
     )
+    # corriger le problème des années futures
+    mask_future = X["date_format"].dt.year > 2025
+    X.loc[mask_future, "date_format"] -= pd.offsets.DateOffset(years=100)
+    X["release_year"] = X["date_format"].dt.year
+
     return X
 
 
@@ -129,8 +224,6 @@ def preprocess_data(X_train, X_test, y_train):
     """
     We use this function to apply previous preprocessing functions on both train and test sets
     """
-    X_train = clip_popularity(X_train)
-    X_test = clip_popularity(X_test)
 
     X_train = budget_missing_indicator(X_train)
     X_test = budget_missing_indicator(X_test)
@@ -141,11 +234,8 @@ def preprocess_data(X_train, X_test, y_train):
     X_train = collection_to_binary(X_train)
     X_test = collection_to_binary(X_test)
 
-    X_train = english_to_binary(X_train)
-    X_test = english_to_binary(X_test)
-
-    X_train = US_to_binary(X_train)
-    X_test = US_to_binary(X_test)
+    # X_train = US_to_binary(X_train)
+    # X_test = US_to_binary(X_test)
 
     selected_genres = get_frequent_genres(X_train, min_occurrence=150)
     X_train = encode_genres(X_train, selected_genres)
@@ -154,40 +244,160 @@ def preprocess_data(X_train, X_test, y_train):
     X_train = log_budget(X_train)
     X_test = log_budget(X_test)
 
+    X_train = count_countries(X_train)
+    X_test = count_countries(X_test)
+
+    top_countries = get_main_countries(X_train, top_n=6)
+    X_train, created_cols = add_country_dummies(X_train, top_countries)
+    X_test, _ = add_country_dummies(X_test, top_countries)
+
     X_train = log_popularity(X_train)
     X_test = log_popularity(X_test)
 
+    X_train = english_to_binary(X_train)
+    X_test = english_to_binary(X_test)
+
     # Interaction features
-    # X_train['budget_x_popularity'] = X_train['budget'] * X_train['popularity_score']
-    # X_test['budget_x_popularity'] = X_test['budget'] * X_test['popularity_score']
+    X_train["budget_x_popularity"] = (
+        X_train["budget_nonzero"] * X_train["popularity_score"]
+    )
+    X_test["budget_x_popularity"] = (
+        X_test["budget_nonzero"] * X_test["popularity_score"]
+    )
 
-    # X_train['has_collection_x_budget'] = X_train['has_collection'] * X_train['budget']
-    # X_test['has_collection_x_budget'] = X_test['has_collection'] * X_test['budget']
+    X_train["budget_nonzero_length_ratio"] = X_train["budget_nonzero"] / X_train[
+        "length"
+    ].replace(0, np.nan)
+    X_test["budget_nonzero_length_ratio"] = X_test["budget_nonzero"] / X_test[
+        "length"
+    ].replace(0, np.nan)
 
-    # X_train['length_x_popularity'] = X_train['length'] * X_train['popularity_score']
-    # X_test['length_x_popularity'] = X_test['length'] * X_test['popularity_score']
+    X_train["length_x_popularity"] = X_train["length"] * X_train["popularity_score"]
+    X_test["length_x_popularity"] = X_test["length"] * X_test["popularity_score"]
 
-    X_train = add_language_count(X_train)
-    X_test = add_language_count(X_test)
+    X_train = extract_release_year(X_train)
+    X_test = extract_release_year(X_test)
+
+    top_revenue_companies = [
+        "Walt Disney Pictures",
+        "Marvel Studios",
+        "Lucasfilm",
+        "20th Century Studios",
+        "Warner Bros. Pictures",
+        "Universal Pictures",
+        "Paramount Pictures",
+        "Columbia Pictures",
+        "Legendary Entertainment",
+        "Pixar Animation Studios",
+    ]
+
+    X_train = add_top_company_features(X_train, top_revenue_companies)
+    X_test = add_top_company_features(X_test, top_revenue_companies)
+
+    star_actors = [
+        "Charlie Chaplin",
+        "Clark Gable",
+        "Humphrey Bogart",
+        "James Stewart",
+        "Cary Grant",
+        "Marlon Brando",
+        "Robert De Niro",
+        "Al Pacino",
+        "Jack Nicholson",
+        "Clint Eastwood",
+        "Harrison Ford",
+        "Sylvester Stallone",
+        "Arnold Schwarzenegger",
+        "Tom Hanks",
+        "Tom Cruise",
+        "Leonardo DiCaprio",
+        "Brad Pitt",
+        "Johnny Depp",
+        "Will Smith",
+        "Denzel Washington",
+        "George Clooney",
+        "Robert Downey Jr.",
+        "Chris Hemsworth",
+        "Ryan Reynolds",
+        "Joaquin Phoenix",
+        "Adam Driver",
+        "Timothée Chalamet",
+        "Chris Evans",
+        "Mark Ruffalo",
+        "Samuel L. Jackson",
+        "Marilyn Monroe",
+        "Audrey Hepburn",
+        "Katharine Hepburn",
+        "Grace Kelly",
+        "Elizabeth Taylor",
+        "Ingrid Bergman",
+        "Meryl Streep",
+        "Jane Fonda",
+        "Jodie Foster",
+        "Sigourney Weaver",
+        "Julia Roberts",
+        "Nicole Kidman",
+        "Cate Blanchett",
+        "Sandra Bullock",
+        "Cameron Diaz",
+        "Angelina Jolie",
+        "Charlize Theron",
+        "Scarlett Johansson",
+        "Jennifer Lawrence",
+        "Emma Stone",
+    ]
+    X_train = add_star_actor_features(X_train, star_actors)
+    X_test = add_star_actor_features(X_test, star_actors)
 
     # Final feature set
-    feature_columns = [
-        "popularity_score",
-        "budget",
-        "budget_is_zero",
-        "has_collection",
-        "language",
-        "country",
-        "length",
-        "language_count",
-    ] + selected_genres
+    feature_columns = (
+        [
+            "popularity_score",
+            "budget_nonzero",
+            "budget_is_zero",
+            "has_collection",
+            "language",
+            "length",
+            "country_count",
+            "is_top_company",
+            "has_stars",
+            "budget_nonzero_length_ratio",
+            "release_year",
+        ]
+        + selected_genres
+        + created_cols
+    )
+
     X_train_final = X_train[feature_columns]
     X_test_final = X_test[feature_columns]
 
     # Transform target variable
-    y_train_log = np.log1p(y_train)
+    y_train_log = np.log10(1 + y_train)
 
     return X_train_final, X_test_final, y_train_log
+
+
+def remove_outliers(X_train, y_train):
+    X_train = X_train.copy()
+    y_train = y_train.copy()
+
+    print("Before removing outliers:", X_train.shape)
+    # remove index 735
+    X_train = X_train.drop(index=735)
+    y_train = y_train.drop(index=735)
+
+    mask = (X_train["budget"] > 120000) | (X_train["budget"] <= 0) & (
+        X_train["popularity_score"] < 45
+    ) & (X_train["length"] > 45)
+
+    mask2 = (X_train["popularity_score"] < 45) & (X_train["length"] > 45)
+
+    X_train = X_train.loc[mask2]
+    y_train = y_train.loc[X_train.index]
+
+    print("After removing outliers:", X_train.shape)
+
+    return X_train, y_train
 
 
 # ----------------------------------------------------------------
@@ -197,15 +407,15 @@ def train_model(X_train, y_train, model_name="catboost"):
     """
     Train a regression model (CatBoost or XGBoost) on the training data
     """
+
     if model_name == "catboost":
         train_pool = Pool(X_train, y_train)
         model = CatBoostRegressor(
-            iterations=800,
+            iterations=900,
             learning_rate=0.05,
             depth=6,
             loss_function="RMSE",
             l2_leaf_reg=4,
-            eval_metric="MSLE",
             random_seed=2,
             verbose=100,
         )
@@ -213,8 +423,8 @@ def train_model(X_train, y_train, model_name="catboost"):
 
     elif model_name == "xgboost":
         model = XGBRegressor(
-            n_estimators=2000,
-            learning_rate=0.03,
+            n_estimators=1500,
+            learning_rate=0.05,
             max_depth=6,
             subsample=0.9,
             colsample_bytree=0.9,
@@ -260,10 +470,10 @@ def save_submission(y_pred, filename="test.txt"):
 
 
 def evaluate_model(X, y, model, name):
-    scorer = make_scorer(mean_squared_log_error, greater_is_better=False)
+    scorer = make_scorer(mean_squared_error, greater_is_better=False)
     cv = KFold(n_splits=5, shuffle=True, random_state=42)
     scores = -cross_val_score(model, X, y, scoring=scorer, cv=cv)
-    print(f"{name} RMSLE mean: {np.sqrt(scores.mean()):.4f}")
+    print(f"{name} RMSE mean: {np.sqrt(scores.mean()):.4f}")
 
 
 # ----------------------------------------------------------------
@@ -273,19 +483,33 @@ if __name__ == "__main__":
     y_train = pd.read_csv("data/challenge_train_revenue.csv", index_col=0)
     X_test = pd.read_csv("data/challenge_test_features.csv", index_col=0)
 
+    # X_train, y_train = remove_outliers(X_train, y_train)
+
     # Preprocess data
     X_train_processed, X_test_processed, y_train_log = preprocess_data(
         X_train, X_test, y_train
     )
+    if ALL_MODELS:
+        for model_name in ["catboost", "xgboost", "histgradientboosting"]:
+            print(f"Training and evaluating model: {model_name}")
+            model = train_model(X_train_processed, y_train_log, model_name=model_name)
+            y_pred = model.predict(X_test_processed)
 
-    # Train model
-    model = train_model(X_train_processed, y_train_log, model_name=CHOOSEN_MODEL)
-    y_pred = model.predict(X_test_processed)
-    y_pred = np.expm1(y_pred)
+            y_pred = (10**y_pred) - 1
+            # Save submission
+            save_submission(y_pred, filename=f"{model_name}.txt")
 
-    # Save submission
-    save_submission(y_pred, filename=f"{CHOOSEN_MODEL}.csv")
+            # evaluate_model(X_train_processed, y_train_log, model, model_name)
+
+    else:
+        # Train model
+        model = train_model(X_train_processed, y_train_log, model_name=CHOOSEN_MODEL)
+        y_pred = model.predict(X_test_processed)
+        y_pred = (10**y_pred) - 1
+
+        # Save submission
+        save_submission(y_pred, filename=f"{CHOOSEN_MODEL}.txt")
 
     # Evaluate models
-    print("Evaluating models with 5-Fold Cross-Validation:")
-    evaluate_model(X_train_processed, y_train_log, model, CHOOSEN_MODEL)
+    # print("Evaluating models with 5-Fold Cross-Validation:")
+    # evaluate_model(X_train_processed, y_train_log, model, CHOOSEN_MODEL)
