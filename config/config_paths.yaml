@@ -1,0 +1,2 @@
+local_inputs_data_path: "data/inputs/"
+online_inputs_data_path: "https://edouardpauwels.fr/MLM2DSSS/"
