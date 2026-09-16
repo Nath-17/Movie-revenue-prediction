@@ -14,11 +14,11 @@ LOGGER.setLevel(logging.INFO)
 PATH_CONFIG_PATH = "config/config_paths.yaml"
 PATH_CONFIG_MODELING = "config/config_modeling.yaml"
 PATH_CONFIG_PROCESSING = "config/config_processing.yaml"
-REGISTRY_NAME = "XGBoostModel"
+MODEL_NAME = "xgboost"
 
 
 def run_pipeline_training(
-    path_config_path, path_config_processing, path_config_modeling, model_name="xgboost"
+    path_config_path, path_config_processing, path_config_modeling, model_name=MODEL_NAME
 ):
     with open(path_config_path, "r") as f:
         config = yaml.safe_load(f)
@@ -46,7 +46,7 @@ def run_pipeline_training(
         y_train,
         config,
         model_name,
-        registry_name=REGISTRY_NAME,
+        registry_name=config["models"][model_name]["registry_name"],
         alias="base_model",
     )
     LOGGER.info("Base model trained")
@@ -58,7 +58,7 @@ def run_pipeline_training(
         y_val,
         config,
         model_name,
-        registry_name=REGISTRY_NAME,
+        registry_name=config["models"][model_name]["registry_name"],
         alias="champion",
         n_trials=20,
     )
