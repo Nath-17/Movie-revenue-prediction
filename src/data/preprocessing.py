@@ -203,34 +203,17 @@ def extract_release_year(X, date_column="date"):
     return X
 
 
-def run_preprocessing(X, config):
-    top_revenue_companies = config["top_revenue_companies"]
-    star_actors = config["star_actors"]
-    min_genre_occurrence = config["number_min_genre_occurrence"]
+def fit_preprocessor(X, config):
+    """Learn the category lists and feature columns from the training data."""
     number_countries = config["number_countries"]
+    min_genre_occurrence = config["number_min_genre_occurrence"]
 
-    X = budget_missing_indicator(X)
-    X = budget_0_to_nan(X)
-    X = log_budget(X)
-
-    X = collection_to_binary(X)
-
-    X = log_popularity(X)
-
-    X = english_to_binary(X)
-
-    X = count_countries(X)
     top_countries = get_main_countries(X, top_n=number_countries)
-    X, country_columns = add_country_dummies(X, top_countries)
-
-    X = add_top_company_features(X, top_revenue_companies)
-
-    selected_genres = get_frequent_genres(X, min_occurrence=min_genre_occurrence)
-    X = encode_genres(X, selected_genres)
-
-    X = add_star_actor_features(X, star_actors)
-
-    X = extract_release_year(X)
+    selected_genres = get_frequent_genres(
+        X, min_occurrence=min_genre_occurrence
+    )
+    country_columns = [f"country_{country}" for country in top_countries]
+    country_columns.append("country_Other")
 
     numeric_feature_columns = (
         [
@@ -248,10 +231,42 @@ def run_preprocessing(X, config):
         + selected_genres
         + country_columns
     )
+    return {
+        "top_countries": top_countries,
+        "selected_genres": selected_genres,
+        "feature_columns": numeric_feature_columns,
+    }
+
+
+def transform_preprocessor(X, config, state):
+    """Transform data with feature choices learned from training data."""
+    top_revenue_companies = config["top_revenue_companies"]
+    star_actors = config["star_actors"]
+
+    X = budget_missing_indicator(X)
+    X = budget_0_to_nan(X)
+    X = log_budget(X)
+
+    X = collection_to_binary(X)
+
+    X = log_popularity(X)
+
+    X = english_to_binary(X)
+
+    X = count_countries(X)
+    X, _ = add_country_dummies(X, state["top_countries"])
+
+    X = add_top_company_features(X, top_revenue_companies)
+
+    X = encode_genres(X, state["selected_genres"])
+
+    X = add_star_actor_features(X, star_actors)
+
+    X = extract_release_year(X)
 
     # Keep only model-safe numeric columns in the transformed frame.
     # This removes non-numeric object/date text columns that XGBoost rejects.
-    X_numeric = X[numeric_feature_columns].copy()
+    X_numeric = X.reindex(columns=state["feature_columns"], fill_value=0).copy()
 
     # Infer numeric columns if there are missing object columns not selected.
     # Also ensure all kept columns are numeric or boolean-compatible.
@@ -260,3 +275,9 @@ def run_preprocessing(X, config):
             X_numeric[column] = pd.to_numeric(X_numeric[column], errors="coerce")
 
     return X_numeric
+
+
+def run_preprocessing(X, config):
+    """Fit and apply preprocessing to one standalone dataframe."""
+    state = fit_preprocessor(X, config)
+    return transform_preprocessor(X, config, state)
