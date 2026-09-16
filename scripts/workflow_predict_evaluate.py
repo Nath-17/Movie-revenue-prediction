@@ -5,7 +5,7 @@ import yaml
 
 from data.dataloader import run_dataloader, split_train_val_test_sets
 from data.preprocessing import fit_preprocessor, transform_preprocessor
-from models.train import train_base_model, train_best_model
+from models.predict_evaluate import predict, save_predictions, error_analysis
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 LOGGER = logging.getLogger(__name__)
@@ -14,11 +14,12 @@ LOGGER.setLevel(logging.INFO)
 PATH_CONFIG_PATH = "config/config_paths.yaml"
 PATH_CONFIG_MODELING = "config/config_modeling.yaml"
 PATH_CONFIG_PROCESSING = "config/config_processing.yaml"
+OUTPUT_PATH = "data/outputs/predictions"
 REGISTRY_NAME = "XGBoostModel"
+MODEL_ALIAS = "champion"
 
-
-def run_pipeline_training(
-    path_config_path, path_config_processing, path_config_modeling, model_name="xgboost"
+def run_pipeline_predicting_evaluating(
+    path_config_path, path_config_processing, path_config_modeling, model_name=REGISTRY_NAME,model_alias=MODEL_ALIAS, output_path = OUTPUT_PATH
 ):
     with open(path_config_path, "r") as f:
         config = yaml.safe_load(f)
@@ -38,36 +39,19 @@ def run_pipeline_training(
     preprocessor = fit_preprocessor(X_train_raw, config)
     X_train = transform_preprocessor(X_train_raw, config, preprocessor)
     X_val = transform_preprocessor(X_val_raw, config, preprocessor)
+    X_test = transform_preprocessor(X_test_raw, config, preprocessor)
     LOGGER.info("Train/validation/test split and preprocessing done")
-
-    # Train the base model and set alias base_model.
-    train_base_model(
-        X_train,
-        y_train,
-        config,
-        model_name,
-        registry_name=REGISTRY_NAME,
-        alias="base_model",
-    )
-    LOGGER.info("Base model trained")
-    # Hyperparameter tuning and best model registration.
-    train_best_model(
-        X_train,
-        y_train,
-        X_val,
-        y_val,
-        config,
-        model_name,
-        registry_name=REGISTRY_NAME,
-        alias="champion",
-        n_trials=20,
-    )
-    LOGGER.info("Model train with optimized hyperparameters")
+    
+    df_predictions = predict(X_test, model_name, model_alias)
+    saved_predictions_file_path = save_predictions(df_predictions, output_path)
+    LOGGER.info(f"Preditions done with {model_name} ({model_alias}).")
+    LOGGER.info(f"Predictions saved at: {saved_predictions_file_path}")
 
 
 if __name__ == "__main__":
-    run_pipeline_training(
+        run_pipeline_predicting_evaluating(
         path_config_path=PATH_CONFIG_PATH,
         path_config_processing=PATH_CONFIG_PROCESSING,
         path_config_modeling=PATH_CONFIG_MODELING,
     )
+
