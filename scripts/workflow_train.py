@@ -3,7 +3,8 @@ import logging
 import pandas as pd
 import yaml
 
-from data.dataloader import run, split_train_test_sets
+from data.dataloader import run_dataloader, split_train_val_test_sets
+from data.preprocessing import fit_preprocessor, transform_preprocessor
 from models.train import train_base_model, train_best_model
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
@@ -13,11 +14,11 @@ LOGGER.setLevel(logging.INFO)
 PATH_CONFIG_PATH = "config/config_paths.yaml"
 PATH_CONFIG_MODELING = "config/config_modeling.yaml"
 PATH_CONFIG_PROCESSING = "config/config_processing.yaml"
-REGISTRY_NAME = "XGBoostModel"
+MODEL_NAME = "xgboost"
 
 
 def run_pipeline_training(
-    path_config_path, path_config_processing, path_config_modeling, model_name="xgboost"
+    path_config_path, path_config_processing, path_config_modeling, model_name=MODEL_NAME
 ):
     with open(path_config_path, "r") as f:
         config = yaml.safe_load(f)
@@ -29,13 +30,15 @@ def run_pipeline_training(
         config.update(config_modeling)
     LOGGER.info("Config files loaded")
 
-    X_train_initial, y_train_initial, _ = run(config)
-    LOGGER.info("Preprocessing done")
+    X_initial, y_initial, _ = run_dataloader(config)
 
-    X_train, X_val, y_train, y_val = split_train_test_sets(
-        X_train_initial, y_train_initial
+    X_train_raw, X_val_raw, X_test_raw, y_train, y_val, y_test = split_train_val_test_sets(
+        X_initial, y_initial
     )
-    LOGGER.info("Train/Validation split done")
+    preprocessor = fit_preprocessor(X_train_raw, config)
+    X_train = transform_preprocessor(X_train_raw, config, preprocessor)
+    X_val = transform_preprocessor(X_val_raw, config, preprocessor)
+    LOGGER.info("Train/validation/test split and preprocessing done")
 
     # Train the base model and set alias base_model.
     train_base_model(
@@ -43,7 +46,7 @@ def run_pipeline_training(
         y_train,
         config,
         model_name,
-        registry_name=REGISTRY_NAME,
+        registry_name=config["models"][model_name]["registry_name"],
         alias="base_model",
     )
     LOGGER.info("Base model trained")
@@ -55,7 +58,7 @@ def run_pipeline_training(
         y_val,
         config,
         model_name,
-        registry_name=REGISTRY_NAME,
+        registry_name=config["models"][model_name]["registry_name"],
         alias="champion",
         n_trials=20,
     )
