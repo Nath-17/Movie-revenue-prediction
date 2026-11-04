@@ -32,4 +32,7 @@ logs/
 /mlflow.db
 /mlruns/
 
-/tests/
+/tests/*
+!/tests/test_association.py
+!/tests/test_charts_drivers.py
+!/tests/test_insights.py
