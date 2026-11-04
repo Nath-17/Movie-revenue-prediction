@@ -1,5 +1,5 @@
 import streamlit as st
-
+from components.sidebar import render_sidebar
 
 st.set_page_config(
     page_title="Movie Revenue ML",
@@ -105,40 +105,4 @@ with col3:
 
 st.divider()
 
-with st.sidebar:
-    st.title("🎬 Movie Revenue ML")
-
-    st.markdown(
-        """
-        **Machine Learning project**
-
-        Predicting movie revenue with Python,
-        Machine Learning and MLflow.
-        """
-    )
-
-    st.divider()
-
-    st.caption("Explore")
-
-    st.page_link(
-        "pages/explore_data.py",
-        label="Explore the data",
-        icon="🎬",
-    )
-
-    st.page_link(
-        "pages/predict_revenue.py",
-        label="Predict revenue",
-        icon="🤖",
-    )
-
-    st.page_link(
-        "pages/model_performance.py",
-        label="Model performance",
-        icon="🧪",
-    )
-
-    st.divider()
-
-    st.caption("Built with Python · Streamlit · MLflow")
+render_sidebar()
