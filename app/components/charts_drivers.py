@@ -1,5 +1,3 @@
-"""Plotly charts for the Explore page's curated revenue-driver stories."""
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go

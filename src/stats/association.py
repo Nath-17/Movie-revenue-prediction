@@ -3,49 +3,10 @@ from collections.abc import Iterable
 import numpy as np
 import pandas as pd
 
+from src.stats.bivariate import combine_rare_categories, eta_squared, spearman_abs
 from src.stats.variable_registry import FeatureSpec
 
 MIN_ASSOCIATION_SAMPLE_SIZE = 30
-
-
-def spearman_abs(x: pd.Series, y: pd.Series) -> float:
-    pairs = pd.concat([x, y], axis=1).apply(pd.to_numeric, errors="coerce")
-    pairs = pairs.replace([np.inf, -np.inf], np.nan).dropna()
-    if (
-        len(pairs) < 2
-        or pairs.iloc[:, 0].nunique() < 2
-        or pairs.iloc[:, 1].nunique() < 2
-    ):
-        return 0.0
-    value = pairs.iloc[:, 0].corr(pairs.iloc[:, 1], method="spearman")
-    if pd.isna(value):
-        return 0.0
-    absolute_value = abs(float(value))
-    return 1.0 if np.isclose(absolute_value, 1.0) else absolute_value
-
-
-def eta_squared(cat: pd.Series, num: pd.Series) -> float:
-    pairs = pd.DataFrame({"category": cat, "value": pd.to_numeric(num, errors="coerce")})
-    pairs = pairs.replace([np.inf, -np.inf], np.nan).dropna()
-    if len(pairs) < 2 or pairs["category"].nunique() < 2:
-        return 0.0
-    overall_mean = pairs["value"].mean()
-    total = ((pairs["value"] - overall_mean) ** 2).sum()
-    if total == 0:
-        return 0.0
-    between = (
-        pairs.groupby("category", observed=True)["value"]
-        .apply(lambda values: len(values) * (values.mean() - overall_mean) ** 2)
-        .sum()
-    )
-    return float(np.clip(between / total, 0.0, 1.0))
-
-
-def _combine_rare_categories(values: pd.Series, min_group_size: int) -> pd.Series:
-    values = values.astype("string").fillna("Unknown")
-    counts = values.value_counts()
-    rare = counts[counts < min_group_size].index
-    return values.where(~values.isin(rare), "Other")
 
 
 def driver_ranking(
@@ -77,7 +38,7 @@ def _rank_feature(
     values = df[feature.column]
     valid = values.notna() & revenue.notna() & (revenue > 0)
     if feature.kind == "categorical":
-        categories = _combine_rare_categories(values[valid], feature.min_group_size)
+        categories = combine_rare_categories(values[valid], feature.min_group_size)
         score = eta_squared(categories, log_revenue[valid])
     else:
         numeric = pd.to_numeric(values, errors="coerce").replace(
